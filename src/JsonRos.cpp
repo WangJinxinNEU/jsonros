@@ -336,7 +336,8 @@ void *run(void *arg)
 		    break;
 		case 2:
 		    cout<<"people follow stop"<<endl;
-		    CreatePID("rosnode kill /turtlebot_follower");															//杀死跟踪的节点
+		    CreatePID("rosnode kill /turtlebot_follower /camera/camera_nodelet_manager /camera/depth_metric /camera/depth_metric_rect /switch");	
+		    CreatePID("rosnode kill /camera/depth_points /camera/depth_rectify_depth /camera/driver /camera/rectify_color /camera/rectify_ir /camera_throttle /follower_velocity_smoother ");//杀死跟踪的节点
 		    followflag=0;
 		    break;    
 		default:
