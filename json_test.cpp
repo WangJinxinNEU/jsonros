@@ -16,7 +16,6 @@ string int2str(int input)
 	ss>>str;
 	return str;
 }
-
 int main()
 {
 	 json_object *jobj__send = json_tokener_parse("{\"id\":\"1\",\"iface\":\"switch.detection\",\"body\":{\"reason\":\"FOUNG\",\"num\":\"1\"}}");
