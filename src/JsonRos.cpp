@@ -39,7 +39,7 @@ json_object * jobj = json_object_new_object();                            //存�
  
 int jsonflag=0,detectionflag=0,followflag=0,chargeflag=0 ,detectionbackflag=0;				/*jsonflag判断是否是json模式的标志位;detectionflag判断人体检测开始或者停止的标志位*/
 
-int closeflag=0;
+int closeflag=0,changeflag=0;//closeflag用来判断客户端是否关闭   changeflag用来检测检测到的人体是否发生变化
 
 int detection_num=0; //检测到的人体的个数
  
@@ -422,30 +422,33 @@ void *run(void *arg)
 void* call_back(void* arg)
 {
 
-    int changeflag=0;
+    
+    char num_str[1024];
     int client_fd = (long)arg; 
     cout<<"子线程的client_fd"<<client_fd<<endl;
     ros::NodeHandle nh_;
   
     ros::Rate r(1);
     ros::Subscriber people_pub_ = nh_.subscribe("/body_tracker/people_num",50 , detection_callback);  
-    json_object *detection_back_found = json_tokener_parse("{\"id\":\"1\",\"iface\":\"detection.result\",\"body\":{\"reason\":\"FOUNG\",\"num\":\"1\"}}");//检测人体回调给客户端的json对象
-    json_object *detection_back_found_body = json_tokener_parse("{\"reason\":\"FOUNG\",\"num\":\"1\"}");//检测人体回调给客户端的json对象
-    json_object *detection_back_lost = json_tokener_parse("{\"id\":\"1\",\"iface\":\"detection.result\",\"body\":{\"reason\":\"LOST\"}}");//检测人体回调给客户端的json对象
-    //sleep(1);   
+    
+
     while(1)
     {
+	json_object *detection_back_found = json_tokener_parse("{\"id\":\"1\",\"iface\":\"detection.result\",\"body\":{\"reason\":\"FOUNG\",\"num\":\"1\"}}");//检测人体回调给客户端的json对象
+	json_object *detection_back_found_body = json_tokener_parse("{\"reason\":\"FOUNG\",\"num\":\"1\"}");//检测人体回调给客户端的json对象
+	json_object *detection_back_lost = json_tokener_parse("{\"id\":\"1\",\"iface\":\"detection.result\",\"body\":{\"reason\":\"LOST\"}}");//检测人体回调给客户端的json对象
 	cout<<"回调线程正在运行"<<endl;
 	if(closeflag==1)
 	{
 	    cout<<"客户端断开链接"<<endl;
+	    changeflag=0;
 	    closeflag=0;
 	    break;
 	}
 	if(detectionbackflag==1)
 	{
 	       cout<<"检测3"<<endl;
-		if(detection_num>0)             //这个要返回检测到的人体的数量  待修改
+		if(detection_num>=0)             //这个要返回检测到的人体的数量  待修改
 		{
 		     if(changeflag==detection_num)
 		    {
@@ -453,11 +456,13 @@ void* call_back(void* arg)
 		    }
 		    if(changeflag<detection_num)
 		    {
+			sprintf(num_str,"%d",detection_num);
 			cout<<"检测到人体"<<endl;
 			json_object *client_id=json_object_new_string(id.c_str());
 			json_object_object_add(detection_back_found,"id",client_id);
-			// json_object_object_add(detection_back_found_body,"num","1");
-			//json_object_object_add(detection_back_found,"body",detection_back_found_body);
+			json_object *peo_num=json_object_new_string(num_str);
+			json_object_object_add(detection_back_found_body,"num",peo_num);
+			json_object_object_add(detection_back_found,"body",detection_back_found_body);
 			if ( strcpy ( callbuff, json_object_to_json_string ( detection_back_found ) ) == NULL )
 			{
 			    perror ( "strcpy" );
