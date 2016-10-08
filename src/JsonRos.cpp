@@ -442,6 +442,7 @@ void* call_back(void* arg)
 	{
 	    cout<<"客户端断开链接"<<endl;
 	    changeflag=0;
+	    detection_num=0;
 	    closeflag=0;
 	    break;
 	}
