@@ -253,7 +253,7 @@ void *run(void *arg)
 			{
 			    string detectionswitch=json_object_get_string(json_object_object_get (detectionbody,"switch") );
 			    if(detectionswitch=="OPEN" ){detectionflag=1;detectionbackflag=1;}            //
-			    if(detectionswitch=="CLOSE" ){detectionflag=2;detectionbackflag=1;}
+			    if(detectionswitch=="CLOSE" ){detectionflag=2;detectionbackflag=1;changeflag=0;detection_num=0;}
 			}
 			
 		    }
