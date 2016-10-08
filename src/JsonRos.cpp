@@ -504,7 +504,7 @@ void* call_back(void* arg)
 	        }
 	      
 	    }
-	    sleep(2);
+	    sleep(1);
 	    memset(callbuff,0,1024);
 	    memset(buff,0,1024);
 	    ros::spinOnce();
