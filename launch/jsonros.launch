@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+
+<launch>
+  <node pkg="jsonros" type="JsonRos" respawn="false" name="JsonRos" output="screen"/>
+ 
+</launch>

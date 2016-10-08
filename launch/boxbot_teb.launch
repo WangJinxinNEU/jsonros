@@ -1,0 +1,85 @@
+<?xml version="1.0"?>
+
+<launch>
+<!--launch tf-->
+  <node pkg="tf" type="static_transform_publisher" name="scan2base" 
+	args="0.14   0   0   0   0   0  /base_footprint /laser 100"  />
+  <!--<node pkg="tf" type="static_transform_publisher" name="camera2base" 
+	args="0.14   0   0   0   0   0  /base_footprint /camera_rgb_frame 100"  />-->
+  
+<!--launch Hokuyo laser-->
+   <node pkg="hokuyo_node" type="hokuyo_node" name="hokuyo_node" /> 
+  
+<!--launch sicklms_5xx laser--> 
+<!--  <node pkg="sicktoolbox_wrapper2" name="lms5xx" type="sicklms_5xx">
+    <param name="ip_add" value="192.168.10.166" />
+    <param name="frame_id" value="laser" />
+    <param name="resolution" value="0.5" />
+  </node>-->
+
+<!--launch depth_camera-->
+<!--   <include file="$(find openni2_launch)/launch/openni2.launch" />  -->
+
+<!--launch turtlebot and get odom -->
+<!-- <include file="$(find turtlebot_bringup)/launch/minimal.launch" /> -->
+  
+ <node pkg="laser_scan_matcher" type="laser_scan_matcher_node"
+    name="laser_scan_matcher_node" output="screen">
+
+    <param name="max_iterations" value="10"/>
+    <param name="fixed_frame" value="odom"/>
+    <param name="base_frame" value="base_footprint"/>
+  </node>
+  
+  <include file="$(find encoder_odometry)/launch/boxrobot_odometry.launch" >
+    <remap from="odom" to="odom1"/>
+  </include> 
+  
+<!--launch map_server-->
+  <arg name="my_map" default="$(find turtlebot_laser_navigation)/maps/609.yaml"/>
+  <node pkg="map_server" type="map_server" name="map_server" args="$(arg my_map)" >
+    <param name="frame_id" value="map"/>
+  </node>
+  
+<!--launch amcl (localization) -->
+  <include file="$(find turtlebot_laser_navigation)/param/amcl.launch.xml" >
+    <arg name="odom_frame_id" value="odom" />
+    <arg name="base_frame_id" value="base_footprint" />
+    <arg name="global_frame_id" value="map" />
+  </include>
+
+<!--launch move_base -->
+<!--  <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+    <rosparam file="$(find turtlebot_laser_navigation)/param/costmap_common_parament.yaml" command="load" ns="global_costmap" />
+    <rosparam file="$(find turtlebot_laser_navigation)/param/costmap_common_parament.yaml" command="load" ns="local_costmap" />   
+    <rosparam file="$(find turtlebot_laser_navigation)/param/costmap_global_parament.yaml" command="load" />   
+    <rosparam file="$(find turtlebot_laser_navigation)/param/costmap_local_parament.yaml" command="load" />
+    <rosparam file="$(find turtlebot_laser_navigation)/param/planner_navfn_parament.yaml" command="load" />
+    <rosparam file="$(find turtlebot_laser_navigation)/param/planner_global_parament.yaml" command="load" />
+    <rosparam file="$(find turtlebot_laser_navigation)/param/planner_local_parament.yaml" command="load" />
+    <rosparam file="$(find turtlebot_laser_navigation)/param/move_base_parament.yaml" command="load" />
+    <rosparam file="$(find turtlebot_laser_navigation)/param/dummy.yaml" />
+
+    <remap from="cmd_vel" to="/mobile_base/commands/velocity"/>
+  </node>-->
+  
+    <!--  ************** Navigation ***************  -->
+  <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+	  <rosparam file="$(find teb_local_planner_tutorials)/cfg/diff_drive/costmap_common_params.yaml" command="load" ns="global_costmap" />
+	  <rosparam file="$(find teb_local_planner_tutorials)/cfg/diff_drive/costmap_common_params.yaml" command="load" ns="local_costmap" />
+	  <rosparam file="$(find teb_local_planner_tutorials)/cfg/diff_drive/local_costmap_params.yaml" command="load" />
+	  <rosparam file="$(find teb_local_planner_tutorials)/cfg/diff_drive/global_costmap_params.yaml" command="load" />
+	  <rosparam file="$(find teb_local_planner_tutorials)/cfg/diff_drive/teb_local_planner_params.yaml" command="load" />
+
+	  <param name="base_global_planner" value="global_planner/GlobalPlanner" />
+	  <param name="planner_frequency" value="1.0" />
+	  <param name="planner_patience" value="5.0" />
+
+	  <param name="base_local_planner" value="teb_local_planner/TebLocalPlannerROS" />
+	  <param name="controller_frequency" value="5.0" />
+	  <param name="controller_patience" value="15.0" />
+	  
+	  <remap from="cmd_vel" to="/mobile_base/commands/velocity"/>
+  </node>
+ 
+ </launch>

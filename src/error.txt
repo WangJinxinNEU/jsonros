@@ -1,0 +1,4 @@
+/opt/ros/indigo/lib/python2.7/dist-packages/roslib/packages.py:447: UnicodeWarning: Unicode equal comparison failed to convert both arguments to Unicode - interpreting them as being unequal
+  if resource_name in files:
+virtual GMapping::GridSlamProcessor::~GridSlamProcessor(): Start
+virtual GMapping::GridSlamProcessor::~GridSlamProcessor(): Deleting tree

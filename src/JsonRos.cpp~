@@ -1,0 +1,766 @@
+#include <ros/ros.h>
+#include <iostream>
+#include <fstream>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <json/json.h>
+#include <sys/socket.h>
+#include <string>
+#include <sys/types.h>
+#include <arpa/inet.h>
+#include <boost/graph/graph_concepts.hpp>
+#include "std_msgs/String.h"
+#include <geometry_msgs/PoseStamped.h>
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
+#include <geometry_msgs/Twist.h>  
+#include "geometry_msgs/Quaternion.h"
+#include <tf/transform_datatypes.h>
+#include <tf/LinearMath/Matrix3x3.h>
+#include "send_goal.h"
+#include "jsonros/protocol.h"
+#include <sensor_msgs/LaserScan.h>
+#include <nav_msgs/OccupancyGrid.h>
+#include <tf/tfMessage.h>
+#include <actionlib_msgs/GoalStatusArray.h>
+#include <vector>
+using namespace std;
+#ifndef MAX_SIZE
+#define MAX_SIZE 1024
+#endif
+double position[3],velocity[3];int map_flag[3];
+int CreatePID(string comname); //创建子进程
+void sendVel(float linear_velocity,float angular_velocity); //发送速度函数
+void goal_Callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg) //amcl定位回调函数
+{        
+	   tf::Quaternion quat;   //创建四元数
+	   geometry_msgs::Quaternion q; //声明四元数对象
+	   q.x=msg->pose.pose.orientation.x;q.y=msg->pose.pose.orientation.y; //四元数对象x,y,z,w;
+	   q.z=msg->pose.pose.orientation.z;q.w=msg->pose.pose.orientation.w;
+	   tf::quaternionMsgToTF(q,quat); 
+         //  position[0]=msg->pose.pose.position.x; //获得position x,获得position y
+	  // position[1]=msg->pose.pose.position.y;
+	   double roll,pitch,yaw;
+	   tf::Matrix3x3(quat).getRPY(roll,pitch,yaw);
+ 	//   position[2]=yaw;
+   
+}
+
+void velocity_Callback(const geometry_msgs::Twist::ConstPtr& twist) //速度回调函数
+{
+    velocity[0]=twist->linear.x;         
+    velocity[1]=twist->linear.y;
+    velocity[2]=twist->angular.z;       
+}
+
+void *run(void *arg);   //创建线程函数
+void get_position( geometry_msgs::TransformStamped &msg); //通过tf定位函数
+ ssize_t r;
+ char buff[MAX_SIZE],callbuff[MAX_SIZE];  //buff为接收client 端缓冲区    //callbuff为server向client缓冲区
+ json_object *jobj = json_object_new_object();   //创建jobj对象
+ static int mapflag=0,maperror=0,mode=0,modeback=0,navflag=0,navback=0,flag1=0,navflag1=0,backflag=0,navpubflag=0,jsonflag=0,status_flag=0,map_check=0,scan_check=0,tf_check=0;
+ double x,y,theta,select_speed;
+ static int saveflag=0,deleteflag=0,amcl_check=0,goal_check=0,goal_status_check=0,vel_mode=0,vel_back=0,speed_flag=0;   
+int main(int argc,char **argv)
+{
+    ros::init(argc,argv,"JsonRos"); //初始化node
+    ros::NodeHandle n;            //设置句柄
+    ros::Subscriber pose_sub, velocity_sub;     //位置订阅  //速度订阅
+    int listenfd = 0, connfd = 0,res=0,flag=0;   //related with the server
+    struct sockaddr_in serv_addr;
+     unsigned int port=8888;           //设置端口
+    listenfd = socket ( AF_INET, SOCK_STREAM, 0 );     //创建socket对象
+      if(listenfd<0)  
+    {  
+        perror("socket");  
+        exit(-1);  
+    }  
+    cout<<"create socket success,fd:"<<listenfd<<endl;  
+    
+    serv_addr.sin_family = AF_INET;                   //以太网协议
+    serv_addr.sin_addr.s_addr = htonl ( INADDR_ANY );    //接收任何ip地址
+    serv_addr.sin_port = htons ( port );                               //设置端口
+    res=bind ( listenfd, ( struct sockaddr* ) &serv_addr, sizeof ( serv_addr ) );    //绑定
+    if(res!=0)  
+    {  
+        perror("bind");        
+        close(listenfd);  
+        exit(-1);  
+    }  
+    cout<<"bind success."<<endl;  
+    
+    res=listen ( listenfd, 5 );      //监听
+    if(res!=0)  
+    {  
+        perror("bind");  
+        close(listenfd);  
+        exit(-1);  
+    }  
+    cout<<"listen success."<<endl;  
+    
+    geometry_msgs::PoseStamped set_msg;    
+    ofstream fin1("./error.txt");     //文件打开函数
+    if(fin1.is_open()){
+      fin1<<"";           //文件写入
+    }
+    fin1.close();
+    string  callback("");        //定义string 类型回调函数，用于存储向client 应答的字符串
+    ros::Rate loop_rate(20);      
+    pose_sub=n.subscribe<geometry_msgs::PoseWithCovarianceStamped>("/amcl_pose", 100,goal_Callback);
+    velocity_sub = n.subscribe<geometry_msgs::Twist>("/mobile_base/commands/velocity",100, velocity_Callback);
+    ros::Publisher pub = n.advertise<geometry_msgs::PoseStamped>("move_base_simple/goal",100);
+    ros::Publisher protocolPub = n.advertise<jsonros::protocol> ( "protocol",50,true );
+     ros::Publisher velocity_pub = n.advertise<geometry_msgs::Twist>("/mobile_base/commands/velocity", 1000);   
+     //cout<<"server open|status:ok !!!"<<endl;
+       jsonros::protocol msg;
+       
+   //4,waiting and accept client connect request...  
+    int client_fd=0;                  
+    unsigned client_port=0;  
+    char client_ip[20];  
+    pthread_t tid;  
+    sockaddr_in client_addr;  
+    socklen_t socklen = sizeof(client_addr);  
+      
+    cout<<"server listenning at port "<<port<<endl;  
+	      
+      while ( ros::ok() )          
+    {
+           client_fd = accept(listenfd,(struct sockaddr *)&client_addr,&socklen);    //接受客户端请求
+              if(client_fd<0)  
+            {  
+               perror("accept");  
+               close(listenfd);  
+               exit(-1);  
+            }      
+  
+       //get client ip and port  
+        inet_ntop(AF_INET,&client_addr.sin_addr.s_addr,client_ip,sizeof(client_ip));      //读取客户端端口号及ip地址
+        client_port = ntohs(client_addr.sin_port);  
+        cout<<"client "<<client_ip<<":"<<client_port<<" connected,client fd:"<<client_fd<<endl;  
+		     		    
+       //create new thread handle client  
+        pthread_create(&tid,NULL,run,(void *)client_fd);  //创建子线程
+        pthread_detach(tid);  	                                            //保证子线程主线程同时工作
+	   ros::spinOnce();
+	  loop_rate.sleep();
+    }
+
+          close(listenfd);             //关闭server端描述符
+          return 0;  
+}
+
+          
+void *run(void *arg)//thread execute function  
+{  
+  
+    boost::shared_ptr<nav_msgs::OccupancyGrid const>map_Ptr;      //建立map指针用于侦听map topic 是否有数据
+    boost::shared_ptr<sensor_msgs::LaserScan const>scan_Ptr;          //侦听scan topic
+    boost::shared_ptr<tf::tfMessage const>tf_Ptr;                                   //侦听tf topic 
+    boost::shared_ptr<geometry_msgs::PoseWithCovarianceStamped const>amcl_Ptr;    //侦听amcl topic
+   //  boost::shared_ptr< geometry_msgs::PoseStamped const>goal_Ptr;                              //侦听/move_base_simple/goal topic
+   // boost::shared_ptr< actionlib_msgs::GoalStatusArray const>goal_status_Ptr;                //侦听 anctionlib goal_status
+    string  callback("");
+    jsonros::protocol msg;  
+    ros::NodeHandle n;    
+    ros::Publisher protocolPub = n.advertise<jsonros::protocol> ( "protocol",50,true );   //自定义protocol topic 用于透传协议发送8字节数 
+    int client_fd = (long)arg;  
+    int len=0;  
+    char buf[1024];  
+    tf::TransformListener listener;     //建立tf 侦听对象
+    while(1)  
+    {           
+      /*obtain position*/
+	   tf::StampedTransform transform;      //定义tf变换 数据
+	  try {
+		  listener.lookupTransform("map","base_link",   //查询map 与base_link之间的tf 变换
+					  ros::Time(0), transform);
+		}
+		catch (tf::TransformException ex){                  //如果出错，报错
+		  ROS_ERROR("%s",ex.what());
+		}
+		geometry_msgs::TransformStamped ts_msg;
+		tf::transformStampedTFToMsg(transform, ts_msg);    //将两个坐标系之间的tf 变换转化成消息类型
+		get_position(ts_msg);        //通过get_position得到具体坐标值 
+       
+   	   json_object *callobj = json_object_new_object();      //创建回调函数对象
+	   if(jsonflag==1){                        //jsonflag表示采用的 json 协议
+	     callback="";
+	   
+	  /*send message to client*/
+	   switch(maperror){                                    //maperror标志位回调当前创建地图的状态
+	     case 1: callback+="mapping start \n";
+			  break;
+	     case 2: callback+="mapping stop\n";
+			  break;
+	     case 3: callback+="mapping save\n";
+			  break;
+	     case 4: callback+="mapping error message\n";
+			  break;
+	     default:callback="mapping don't work";maperror=0;break;
+	  }
+	    if(maperror==4){                                    //如果maperror ==4将错误信息保存至txt文件夹下
+		ifstream fin("./error.txt");
+		if(!fin){
+		  cout<<"Error : no such file,please check the file name"<<endl;
+		}
+		char ch;
+		fin>>ch;
+		if(!fin.eof()){
+		    callback+=ch;
+		    while(!fin.eof()){
+		      char buff[50];
+		      fin.getline(buff,100);
+		      callback+=buff;
+		    }
+		  }
+		  else {
+		    callback+="program running fun";
+		  }
+		  fin.close();
+	    }
+	    
+	    	    
+	    json_object *jobj = json_object_new_object();        //创建job对象
+	    json_object *keyvalue = json_object_new_object();   //创建 keyvalue 对象
+	     json_object *checkstatus = json_object_new_object();   
+	     json_object *deletefile = json_object_new_object();
+	    json_object *comm ;
+	    
+	    json_object *pos=json_object_new_array();
+	    json_object *vel=json_object_new_array();
+	    json_object *pose=json_object_new_object();
+	    json_object *controlmode;
+	    json_object *comn;
+	    json_object *map_status;
+	    json_object *scan_status;
+	    json_object *tf_status;
+	    json_object *no_status;
+	    json_object *delete_path;
+	    json_object *amcl_status;
+	    json_object *goal_status;
+	    json_object *vel_status;
+	     json_object *vel_speed;
+	     
+	   
+	   if(speed_flag==1){                            // 将select_speed值反馈至vel_speed对象
+	    vel_speed= json_object_new_double(select_speed);
+	    speed_flag=0;
+	  }  
+	     
+	  if(saveflag==1){                  //保存当前amcl定位的坐标到txt 中
+	         saveflag=0;
+	  ofstream out("/home/neu/catkin_ws/src/jsonros/src/amcl.txt",ios::app);
+	          if(out.is_open()){
+	          out<<" "<<position[0]<<" "<<position[1]<<" "<<position[2]<<endl;
+	          out.close();
+                  }	        
+	     }
+	     
+	    if(deleteflag==1){                         //删除当前的amcltxt文件
+	         deleteflag=0;
+        if(remove("/home/neu/catkin_ws/src/jsonros/src/amcl.txt"))
+	{
+	  cout<<"Could not delete the file amcl.txt"<<endl;
+	  delete_path = json_object_new_string ( "delete|error" );
+	}
+       else   
+       {  cout<<"The amcl.txt are deleted completely ! "<<endl;
+	  delete_path = json_object_new_string ( "delete amcl.txt completed" );
+       }
+	    }
+	    
+	    
+	     //侦听map topic数据
+	  map_Ptr=ros::topic::waitForMessage<nav_msgs::OccupancyGrid>("/map",ros::Duration(0.5));
+           if(map_Ptr==NULL)
+           {cout<<"map|status:error:"<<endl;map_check=1;}
+           else
+           {cout<<"map|status:ok"<<endl;   map_check=2;} 
+                //侦听scan topic数据
+            scan_Ptr=ros::topic::waitForMessage<sensor_msgs::LaserScan>("/scan",ros::Duration(0.5));
+           if(scan_Ptr==NULL)
+           {cout<<"scan|status:error:"<<endl;scan_check=1;}
+           else
+           {cout<<"scan|status:ok"<<endl;scan_check=2;} 
+            //侦听tf topic数据
+            tf_Ptr=ros::topic::waitForMessage<tf::tfMessage>("/tf",ros::Duration(0.5));
+           if(tf_Ptr==NULL)
+           {cout<<"tf|status:error:"<<endl; tf_check=1;}
+           else
+           {cout<<"tf|status:ok"<<endl;tf_check=2;} 
+             //侦听amcl topic数据
+             amcl_Ptr=ros::topic::waitForMessage<geometry_msgs::PoseWithCovarianceStamped>("/amcl_pose",ros::Duration(0.5));
+           if(amcl_Ptr==NULL)
+           {cout<<"amcl|status:error:"<<endl; amcl_check=1;}
+           else
+           {cout<<"amcl|status:ok"<<endl;amcl_check=2;} 
+          //  goal_Ptr=ros::topic::waitForMessage<geometry_msgs::PoseStamped>("/move_base_simple/goal",ros::Duration(0.5));
+//            if(goal_Ptr==NULL)
+//             {cout<<"goal|status:error:"<<endl; goal_check=1;}
+//            else
+//             {cout<<"goal|status:ok"<<endl;goal_check=2;} 
+           
+//            if(goal_status_Ptr==NULL)
+//            {cout<<"amcl|status:error:"<<endl; amcl_check=1;}
+//            else
+//            {cout<<"amcl|status:ok"<<endl;amcl_check=2;} 
+           
+            //server端向client端返回控制模式信息
+	    switch(modeback){
+	      case 1:controlmode = json_object_new_string ( "under_control" ); break;
+	      case 2:controlmode = json_object_new_string ( "navigation" ); break;
+	      case 3:controlmode = json_object_new_string ( "roam mode" );  break;
+	      default:controlmode = json_object_new_string ( "no control mode" );break;
+	    }
+	    //server端向client端返回速度信息
+	     switch(vel_back){
+	      case 1:  vel_status = json_object_new_string ( "left back" ); vel_back=0;break;
+	      case 2:  vel_status = json_object_new_string ( "go back" );vel_back=0; break;
+	      case 3:  vel_status = json_object_new_string ( "right back" );  vel_back=0;break;
+	      case 4:  vel_status = json_object_new_string ( "turn left" ); vel_back=0; break;
+	      case 5:  vel_status = json_object_new_string ( "stop" ); vel_back=0; break;
+	       case 6:  vel_status = json_object_new_string ( "turn right" ); vel_back=0; break;
+	        case 7:  vel_status = json_object_new_string ( "turn left forward" ); vel_back=0; break;
+		 case 8:  vel_status = json_object_new_string ( "go forward" ); vel_back=0; break;
+		  case 9:  vel_status = json_object_new_string ( "turn right forward" ); vel_back=0; break;
+	      default:  vel_status = json_object_new_string ( "not under_control status" );break;
+	    }
+	    
+	    
+	    
+	    //通过标志位将topic当前的状态返回至client 端
+	      if(map_check==1){
+		map_status = json_object_new_string ( "map|error" ); 
+	         map_check=0;
+	      }
+	      if(map_check==2){
+		map_status = json_object_new_string ( "map|ok" ); 
+	         map_check=0;
+	      }
+	      if(scan_check==1){
+	        scan_status = json_object_new_string ( "scan|error" );
+		scan_check=0;
+	      }
+	      if(scan_check==2){
+	        scan_status = json_object_new_string ( "scan|ok" );
+		scan_check=0;
+	      }
+	      if(tf_check==1){
+		tf_status = json_object_new_string ( "tf|error" );
+		tf_check=0;
+	      }
+	      if(tf_check==2){
+		tf_status = json_object_new_string ( "tf|ok" );
+		tf_check=0;
+	      }
+	      
+	      if(amcl_check==1){
+		amcl_status = json_object_new_string ( "amcl|error" );
+		amcl_check=0;
+	      }
+	      if(amcl_check==2){
+		amcl_status = json_object_new_string ( "amcl|ok" );
+		amcl_check=0;
+	      }
+	      
+// 	       if(goal_check==1){
+// 		goal_status = json_object_new_string ( "goal|error" );
+// 		goal_check=0;
+// 	      }
+// 	      if(goal_check==2){
+// 		goal_status = json_object_new_string ( "goal|ok" );
+// 		goal_check=0;
+// 	      }
+	      
+	    //将navigation 的启动/停止返回至client端     
+	    if(navback==1){
+	      comn = json_object_new_string ( "navigation is running" ); 
+	      navback=0;
+	    }
+	    if(navback==2){
+	      comn = json_object_new_string ( "navigation is stoped" );
+	      navback=0;
+	    }
+
+	  //将得到的坐标（x,y,theta） 速度信息（linear.x,y,z）返回至一个array中 
+	    json_object_array_add(pos,json_object_new_double(position[0]));
+	    json_object_array_add(pos,json_object_new_double(position[1]));
+	    json_object_array_add(pos,json_object_new_double(position[2]));
+	    json_object_array_add(vel,json_object_new_double(velocity[0]));
+	    json_object_array_add(vel,json_object_new_double(velocity[1]));
+	    json_object_array_add(vel,json_object_new_double(velocity[2]));
+	    
+	    //server端向client 端返回回调状态
+	    switch(backflag){
+	      case 1:       //返回建图的状态
+		comm = json_object_new_string ( callback.c_str() );
+		json_object_object_add ( keyvalue,"status", comm );
+		json_object_object_add (callobj,"action.mapping", keyvalue );
+		backflag=0;
+		break;
+	      case 2:         //返回位置状态
+		json_object_object_add (pose,"position", pos );
+		json_object_object_add (pose,"velocity", vel );
+		json_object_object_add (callobj,"query.pose", pose );
+		backflag=0;
+		break;
+	      case 3:       //返回当前模式状态（navigation/roam/under_control）
+		json_object_object_add (callobj,"query.mode", controlmode );
+		modeback=0;
+		backflag=0;
+		break;
+	      case 4:         //返回导航启动还是停止
+		json_object_object_add (callobj,"navigation", comn );
+		backflag=0;
+		break;
+	      case 5:                   //返回创建地图各个topic状态
+		json_object_object_add (checkstatus,"map_status", map_status );
+		json_object_object_add (checkstatus,"scan_status", scan_status );
+		 json_object_object_add (checkstatus,"tf_status", tf_status );
+		json_object_object_add (callobj,"mapping.status", checkstatus );
+		backflag=0;
+		break;
+	      case 6:                        //返回保存坐标成功/失败信息
+		json_object_object_add (pose,"position", pos );
+		json_object_object_add (callobj,"saving.pose", pose );
+		backflag=0;
+		break;
+	      case 7:                         //删除amcl.txt 文件
+		json_object_object_add (deletefile,"delete", delete_path );
+		json_object_object_add (callobj,"saving.pose", deletefile );
+		backflag=0;
+		break;
+	      case 8:                           //返回navigation各个topic状态
+		json_object_object_add (checkstatus,"map_status", map_status );
+		json_object_object_add (checkstatus,"scan_status", scan_status );
+		json_object_object_add (checkstatus,"tf_status", tf_status );
+		json_object_object_add (checkstatus,"amcl_status", amcl_status );
+		//json_object_object_add (checkstatus,"goal_status", goal_status );
+		json_object_object_add (callobj,"navigation.status", checkstatus );
+		backflag=0;
+		break;                              //返回当前的速度状态
+	        case 9: json_object_object_add (callobj,"velocity_status", vel_status );
+		backflag=0;
+		break;                               //返回当前的速度值
+		case 10: json_object_object_add (callobj,"current_speed", vel_speed );
+		backflag=0;
+		break;
+	
+	      default:break;
+	    }
+
+	     
+// 	     switch(status_flag){
+// 	       case 1:                                                              //返回位置信息
+// 		     json_object_object_add (pose,"position", pos );
+// 	     }
+// 	     
+	    	    
+	  }else{
+	    json_object *comn1 = json_object_new_string ( "touchuan" );  //向client端返回透传模式信息
+	    json_object_object_add (callobj,"message", comn1 );
+	  }
+	  
+
+	    
+	    if ( strcpy ( callbuff, json_object_to_json_string ( callobj ) ) == NULL )   //将callobj对象复制给callbuff缓冲区
+		{
+		    perror ( "strcpy" );
+		    exit(1);
+		}
+
+	    if ( send (  client_fd, callbuff, strlen ( callbuff ) ,0) == -1 )    //将callbuff 字符串发送至客户端
+	    {
+		perror ( "write" );
+		exit(1);
+	    }
+     
+     
+         len = recv(client_fd,buff,1024,0);//read data from client
+         cout<<"server receive data!"<<endl;
+        if(len==0)  
+        {  
+            cout<<"client disconnected."<<endl;       //链接断开
+            close(client_fd);  
+            break;  
+        }  
+        if ( buff[0]==0x7B )    {                                     //判断大括弧0x7b
+             cout<<"json transmit sucess！"<<endl;            
+    		    
+		      jsonflag=1;
+		      jobj = json_tokener_parse ( buff );
+		      cout<<json_object_to_json_string ( jobj )<<endl;
+		      double pos_x=position[0],pos_y=position[1],pos_theta=position[2];
+		      json_object *mapping,*pose,*conmode,*nav,*amcl_pos,*status,*set_velocity;
+		      int map_n=0,path_n=0,target_n=0;
+		     
+		      
+		      //先从jobj中读action.mapping判断是否有数据
+		      //如果存在，将得到的信息赋给mapping对象
+		      //再从mapping对象中判断anction中是否有值
+		      //将anction 中的key值读出来判断，并给标志位赋值并执行相应的动作，以及反馈相应信息
+		      if(json_object_object_get_ex(jobj,"action.mapping",NULL)){
+			mapping=json_object_object_get ( jobj,"action.mapping" );
+			if(json_object_object_get_ex(mapping,"action",NULL)){
+			  string mapcom=json_object_get_string(json_object_object_get ( mapping,"action" ));
+			  if(mapcom=="start" ){mapflag=1;maperror=1;}
+			  if(mapcom=="stop" ){mapflag=2;maperror=2;}
+			  if(mapcom== "save" ){mapflag=3;maperror=3;}
+			}
+			if(json_object_object_get_ex(mapping,"error",NULL)){
+			  string error=json_object_get_string(json_object_object_get ( mapping,"error" ));
+			  if(error=="yes")maperror=4;
+			}
+			backflag=1;
+		      }
+                     //查询位置
+		      if(json_object_object_get_ex(jobj,"query.pose",NULL)){
+			amcl_pos=json_object_object_get ( jobj,"query.pose" );
+		       string amcl_pose=json_object_get_string(amcl_pos);
+			   if(amcl_pose=="save"){saveflag=1;backflag=6; cout<<"saving the current position"<<endl;}
+		            if(amcl_pose=="yes"){backflag=2;cout<<"obtaining position and velocity……"<<endl;}
+			    if(amcl_pose=="delete"){deleteflag=1;backflag=7;cout<<"the cunrrent amcl.txt is deleted"<<endl;}
+		      }
+		      if(json_object_object_get_ex(jobj,"query.mode",NULL)){
+			backflag=3;cout<<"querying control mode right now……"<<endl;
+		      }
+		      if(json_object_object_get_ex(jobj,"setting.mode",NULL)){
+			conmode=json_object_object_get(jobj,"setting.mode");
+			string modeflag=json_object_get_string(conmode);
+			if(modeflag=="under_control"){mode=1;modeback=1;}
+			if(modeflag=="navigation"){mode=2;modeback=2;}
+			if(modeflag=="roam"){mode=3;modeback=3;}
+			backflag=3;
+		      }
+		      
+		      
+		      //启动导航
+		      if(json_object_object_get_ex(jobj,"navigation",NULL)){
+			nav=json_object_object_get(jobj,"navigation");
+			json_object *mapnum,*pathnum,*targetnum,*action,*target;
+			
+			if(json_object_object_get_ex(nav,"action",NULL)){
+			  action=json_object_object_get(nav,"action");
+			  string navaction=json_object_get_string(action);
+			  if(navaction=="start")navflag=1;
+			  if(navaction=="stop")navflag=2;
+			}
+			//确定地图，路径，目标
+			if(json_object_object_get_ex(nav,"mapnum",NULL)){
+			  map_n=json_object_get_int(json_object_object_get ( nav,"mapnum" ));
+			  path_n=json_object_get_int(json_object_object_get ( nav,"pathnum" ));
+			  target_n=json_object_get_int(json_object_object_get ( nav,"targetnum" ));
+			  navflag=1;
+			  navpubflag=1;
+			}
+			//发送指定目标点
+			if(json_object_object_get_ex(nav,"target",NULL)){
+			  json_object *pos=json_object_new_array();
+			  pos=json_object_object_get ( nav,"target" );
+			  pos_x=json_object_get_double(json_object_array_get_idx(pos,0));
+			  pos_y=json_object_get_double(json_object_array_get_idx(pos,1));
+			  pos_theta=json_object_get_double(json_object_array_get_idx(pos,2));
+			  navflag=1;
+			  navpubflag=2;
+			}
+			backflag=4;
+		      }
+		      //查询各个topic 的状态
+		       if(json_object_object_get_ex(jobj,"check.status",NULL)){
+			status=json_object_object_get ( jobj,"check.status" );
+		        string statuss=json_object_get_string(status);
+			if(statuss=="status"){backflag=5;cout<<"checking the status of mapping right now……"<<endl;}
+			if(statuss=="navstatus"){backflag=8;cout<<"checking the status of navigation right now……"<<endl;}
+		      }
+		      //被控模式下发送速度
+		         if(json_object_object_get_ex(jobj,"under_control",NULL)){ 
+			 set_velocity=json_object_object_get ( jobj,"under_control" );
+			  string velocity=json_object_get_string(set_velocity);
+			if(velocity=="leftback"){mode=1;vel_mode=1; vel_back=1;  backflag=9;cout<<"left back  "<<endl;}
+			if(velocity=="goback"){mode=1;vel_mode=2;  vel_back=2;backflag=9;cout<<"go back "<<endl;}
+			if(velocity=="rightback"){mode=1;vel_mode=3;  vel_back=3;backflag=9;cout<<"right back"<<endl;}
+			if(velocity=="left"){mode=1;vel_mode=4;  vel_back=4;backflag=9;cout<<"turn left"<<endl;}
+			if(velocity=="stop"){mode=1;vel_mode=5;  vel_back=5;backflag=9;cout<<"stop"<<endl;}
+			if(velocity=="right"){mode=1;vel_mode=6;  vel_back=6;backflag=9;cout<<"turn right"<<endl;}
+			if(velocity=="leftforward"){mode=1;vel_mode=7;  vel_back=7;backflag=9;cout<<"turn left forward"<<endl;}
+			if(velocity=="forward"){mode=1;vel_mode=8;  vel_back=8;backflag=9;cout<<"go forward"<<endl;}
+			if(velocity=="rightforward"){mode=1;vel_mode=9;  vel_back=9;backflag=9;cout<<"turn right forward"<<endl;}
+
+		       }
+		        if(json_object_object_get_ex(jobj,"speed_value",NULL)){
+			   select_speed=json_object_get_double(json_object_object_get ( jobj,"speed_value" ));
+			   speed_flag=1;
+			  backflag=10;
+			  cout<<"the current speed:"<<select_speed<<endl;
+			}
+		      
+		      
+                    //执行相应的动作启动相应的launch 文件并创建子进程
+		      switch (mapflag){
+			case 1:
+				    if(flag1==0){
+ 				      cout<<"mapping start"<<endl;
+				      mapflag=0;
+				      CreatePID("roslaunch robot_gmapping robot_gmapping_laser.launch");   //创建子进程
+// 			
+// 				       CreatePID("roslaunch robot_gmapping robot_gmapping_laser.launch ");
+				      flag1=1;
+				    }
+				    break;
+			case 2:
+				    CreatePID("rosnode kill /odometer_client gmaping /scan2base /hokuyo_node ");
+				    cout<<"mapping stop"<<endl;
+				    mapflag=0;
+				    flag1=0;
+				    break;
+			case 3:
+				    CreatePID("rosrun map_server map_saver");
+				    cout<<"mapping save"<<endl;
+				    mapflag=0;
+				    flag1=0;
+				    break;	  
+			default:break;
+		      } 	
+		      
+		      ostringstream ss;
+		      string navpose;
+		      switch(mode){
+			case 1:cout<<"under_control mode"<<endl;
+				    navflag1=0;
+				  //  mode=0;
+				    CreatePID("rosrun jsonros send_goal under_control ");
+				       switch(vel_mode)
+		                    {
+			                   case 1: sendVel(-0.2*select_speed,0.2*select_speed);vel_mode=0;break;
+		                           case 2: sendVel(-0.2*select_speed,0*select_speed);vel_mode=0;break;
+		                           case 3: sendVel(-0.2*select_speed,-0.2*select_speed);vel_mode=0;break;
+		                           case 4: sendVel(0*select_speed,0.2*select_speed);vel_mode=0;break;
+					   case 5: sendVel(0,0);vel_mode=0;break;
+					   case 6: sendVel(0*select_speed,-0.2*select_speed);vel_mode=0;break;
+					    case 7: sendVel(0.2*select_speed,0.2*select_speed);vel_mode=0;break;
+					    case 8: sendVel(0.2*select_speed,0*select_speed);vel_mode=0;break;
+					     case 9: sendVel(0.2*select_speed,-0.2*select_speed);vel_mode=0;break;
+			                   default:break;
+		                    }    
+				    mode=0;
+				    break;
+			case 2:
+				    if(navflag1==0){
+					cout<<"enter navigation mode"<<endl;
+// 				       CreatePID("roslaunch patrol_navigation patrol_navigation2.launch");
+ 					CreatePID("roslaunch turtlebot_laser_navigation boxbot_teb.launch ");
+				       navflag1=1;
+				    }else{
+					    switch(navflag){
+					      case 2:cout<<"navigation don't run"<<endl;navflag=0;navflag1=0;mode=0;navback=2;
+	 						CreatePID("rosnode kill  /amcl /hokuyo_node /laser_scan_matcher_node /map_server /move_base /odometer_client /scan2base /send_goal");
+// 							CreatePID("rosnode kill  /amcl /hokuyo_node /laser_scan_matcher_node /map_server /move_base /odometer_client /scan2base");
+							break;
+					      case 1:cout<<"navigation is running"<<endl;navback=1;
+      // 						    CreatePID("rosrun jsonros send_goal navigation 1.2 3.4 5.6");
+							  switch(navpubflag){
+							    case 1:
+									ss<<map_n<<" "<<path_n<<" "<<target_n;
+									navpose="rosrun jsonros send_goal navigation 1 "+ss.str();
+									cout<<navpose<<endl;
+									CreatePID(navpose);
+									navpubflag=0;
+									break;
+							    case 2:
+									ss<<pos_x<<" "<<pos_y<<" "<<pos_theta;
+      								        cout<<ss.str()<<endl;
+									navpose="rosrun jsonros send_goal navigation 2 "+ss.str();
+									cout<<navpose<<endl;
+									CreatePID(navpose);
+									navpubflag=0;
+									break;
+							    default:break;
+							  }
+							  
+							  break;
+					      default:break;
+					      }	
+				    }
+				    break;
+			case 3:cout<<"enter roam mode"<<endl;mode=0;
+				    CreatePID("rosrun jsonros send_goal random ");
+// 				    launch_target->randomPose(6,11,1,3,2);
+				    break;
+			default:break;
+		      }
+		    
+        
+    }  
+       else
+    {
+       cout<<" touchuan transmit sucess！"<<endl;     //通过透传模式将buff发送至msg 
+        msg.byte1 = (uint8_t)buff[0];
+        msg.byte2 = (uint8_t)buff[1];
+	msg.byte3 = (uint8_t)buff[2];
+	msg.byte4 = (uint8_t)buff[3];
+	msg.byte5 = (uint8_t)buff[4];
+	msg.byte6 = (uint8_t)buff[5];
+        msg.byte7 = (uint8_t)buff[6];
+        msg.byte8 = (uint8_t)buff[7]; 
+	
+	 ROS_INFO("S1:%02x",msg.byte1 );
+         ROS_INFO("S2:%02x",msg.byte2 );
+         ROS_INFO("S3:%02x",msg.byte3);
+         ROS_INFO("S4:%02x",msg.byte4 );
+         ROS_INFO("S5:%02x",msg.byte5 );
+         ROS_INFO("S6:%02x",msg.byte6 );
+         ROS_INFO("S7:%02x",msg.byte7 );
+         ROS_INFO("S8:%02x",msg.byte8 );
+          protocolPub.publish ( msg );
+          memset ( buff,0,sizeof ( buff ) );
+       ROS_INFO ( "Successfully send passthrough protocol" );	 
+     //  len = send(client_fd,buff,len,0);//echo to client 
+    }   
+    }  
+    return NULL;  
+}            
+          
+int CreatePID(string comname)     //创建子进程函数
+{
+     string command;
+     command=comname;
+
+     if( fork() == 0)//创建子进程
+      {
+	
+	if(execl("/bin/sh","sh","-c",const_cast<char*>(command.c_str()),(char *)0)==-1)
+// 	if(execl("/usr/bin/gnome-terminal","gnome-terminal","-x",const_cast<char*>(command.c_str()),(char *)0) == -1)
+	{
+	  perror("fork error");
+	  return -1;
+	}
+      }
+      return 0;
+}
+
+void get_position( geometry_msgs::TransformStamped &msg){      //得到msg状态存至position数组中
+    
+    position[0] = msg.transform.translation.x;
+    position[1]= msg.transform.translation.y;
+    position[2]= tf::getYaw(msg.transform.rotation);
+}
+void sendVel(float linear_velocity,float angular_velocity)    //publish 速度值到topic 
+{
+      int speed_fd=0;  
+       pthread_t speed_vel;  
+    cout<<"hello velocity"<<endl;
+    ros::NodeHandle n;    
+    ros::Publisher velocity_pub;
+  velocity_pub = n.advertise<geometry_msgs::Twist>("mobile_base/commands/velocity", 1000);
+    geometry_msgs::Twist msg;
+    msg.linear.x = linear_velocity;
+    msg.linear.y = 0;
+    msg.linear.z = 0;
+    msg.angular.x = 0;
+    msg.angular.y = 0;
+    msg.angular.z = angular_velocity;
+    velocity_pub.publish( msg );  
+}
